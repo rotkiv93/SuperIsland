@@ -5,7 +5,7 @@
   "minAppVersion": "1.0.0",
   "main": "index.js",
   "author": { "name": "Victor" },
-  "description": "GlobalProtect VPN status with connect/disconnect, plus Cornercase agents and worktrees (local and remote VPS).",
+  "description": "GlobalProtect VPN status with connect/disconnect, plus service health (VPS, GitLab, Ollama, Mongo).",
   "icon": "icon.svg",
   "license": "MIT",
   "categories": ["developer"],

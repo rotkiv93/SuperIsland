@@ -3,8 +3,7 @@
     {
       "title": "Alerts",
       "fields": [
-        { "type": "toggle", "key": "notifyVpn", "label": "Notify when the VPN connects or drops", "default": true },
-        { "type": "toggle", "key": "notifyAgents", "label": "Notify when a Cornercase agent finishes or fails", "default": true }
+        { "type": "toggle", "key": "notifyVpn", "label": "Notify when the VPN or a service connects/drops", "default": true }
       ]
     },
     {

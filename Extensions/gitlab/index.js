@@ -28,13 +28,22 @@ function notify(title, body, url) {
   SuperIsland.notifications.send({ title: title, body: body, sound: false, appName: "GitLab" });
 }
 
+function bridge(path, body) {
+  return SuperIsland.http.fetch("http://127.0.0.1:7831" + path, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body)
+  }).then(function (res) {
+    if (res.error) throw new Error(res.error);
+    return res.data || JSON.parse(res.text);
+  });
+}
+
 function normalize(mr) {
   var p = mr.head_pipeline || null;
   return {
     id: mr.id, iid: mr.iid, project: (mr.references && mr.references.full) ? mr.references.full.replace(/!\d+$/, "") : String(mr.project_id),
     title: mr.title, url: mr.web_url, author: mr.author && mr.author.name, draft: !!(mr.draft || mr.work_in_progress),
     pipeline: p ? p.status : null, pipelineID: p ? p.id : null, projectID: mr.project_id,
-    conflicts: !!mr.has_conflicts, updated: mr.updated_at
+    branch: mr.source_branch, conflicts: !!mr.has_conflicts, updated: mr.updated_at
   };
 }
 
@@ -107,6 +116,9 @@ function mrRow(m) {
       ], { spacing: 1, align: "leading" })
     ], { spacing: 8, align: "center" }), "open:" + m.id),
     View.spacer(),
+    View.button(View.icon("rectangle.stack", { size: 11, color: "purple" }), "orca:" + m.id),
+    View.button(View.icon("server.rack", { size: 11, color: "teal" }), "cc:" + m.id),
+    View.button(View.icon("safari", { size: 11, color: "blue" }), "open:" + m.id),
     m.pipeline === "failed" ? View.button(View.icon("arrow.clockwise", { size: 11, color: "orange" }), "retry:" + m.id) : null
   ], { spacing: 8, align: "center" });
 }
@@ -201,11 +213,22 @@ SuperIsland.registerModule({
       }
       return;
     }
-    var m = /^(open|retry):(\d+)$/.exec(id);
+    var m = /^(open|retry|orca|cc):(\d+)$/.exec(id);
     if (!m) return;
     var mr = state.review.concat(state.mine).filter(function (x) { return x.id === Number(m[2]); })[0];
     if (!mr) return;
     if (m[1] === "open") { SuperIsland.openURL(mr.url); return; }
+    if (m[1] === "orca" || m[1] === "cc") {
+      var where = m[1] === "orca" ? "Orca" : "cornercase (VPS)";
+      state.error = "Opening " + mr.branch + " in " + where + "…";
+      bridge("/mr/" + (m[1] === "orca" ? "orca" : "cornercase"), { project: mr.project, branch: mr.branch, url: mr.url })
+        .then(function (r) {
+          state.error = r.ok ? null : where + ": " + r.error;
+          SuperIsland.playFeedback(r.ok ? "success" : "error");
+          if (r.ok) notify("Opened in " + where, mr.project + " · " + mr.branch);
+        }).catch(function (e) { state.error = "Dev bridge not running (" + e.message + ")"; });
+      return;
+    }
     api("/projects/" + mr.projectID + "/pipelines/" + mr.pipelineID + "/retry", "POST")
       .then(function () { SuperIsland.playFeedback("success"); setTimeout(refresh, 2000); })
       .catch(function (e) { state.error = "Retry failed: " + e.message; SuperIsland.playFeedback("error"); });

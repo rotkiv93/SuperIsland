@@ -10,6 +10,8 @@ stdlib-only server (127.0.0.1:7831) does the local work on their behalf:
   POST /vpn/connect              click "Connect" in the GlobalProtect menu-bar UI
   POST /vpn/disconnect           click "Disconnect"
   GET  /cornercase               {local, remote} summaries (agents, worktrees)
+  POST /mr/orca                  {project, branch, url} -> Orca worktree linked to the MR
+  POST /mr/cornercase            {project, branch} -> worktree workspace in cornercase on the VPS
   GET  /services                 [{name, up, ms}] VPS / GitLab / Ollama / Mongo reachability
   POST /clipboard/transform      {id, kind: json|minify|trim} -> result goes on the clipboard
   GET  /clipboard                {items: [...]}   (newest first, pinned first)
@@ -25,6 +27,7 @@ carries an Origin header (i.e. from a web page) is rejected.
 import json
 import os
 import re
+import shlex
 import socket
 import pathlib
 import subprocess
@@ -148,7 +151,8 @@ def summarize_status(data):
                         "status": st, "model": pane.get("model"),
                         "context": pane.get("context"), "id": pane.get("id")})
     return {"counts": counts, "agents": agents,
-            "projects": len(data.get("projects", []))}
+            "projects": len(data.get("projects", [])),
+            "paths": [{"name": p.get("name"), "path": p.get("path")} for p in data.get("projects", [])]}
 
 
 def summarize_worktrees(data):
@@ -192,6 +196,94 @@ def cornercase_loop():
         with _cc_lock:
             _cc.update(local=local, remote=remote, at=time.time())
         time.sleep(CORNERCASE_INTERVAL)
+
+
+# --------------------------------------------------------------------------
+# Open a GitLab MR branch in Orca (local) or cornercase (remote VPS)
+# --------------------------------------------------------------------------
+
+SAFE = re.compile(r"^[A-Za-z0-9._/@+-]+$")
+LOCAL_ROOTS = [pathlib.Path.home() / "dev" / "LINEA", pathlib.Path.home() / "dev"]
+REMOTE_FALLBACK_ROOT = os.environ.get("DEV_BRIDGE_REMOTE_ROOT", "~/projects/linea")
+
+
+def json_or_none(text):
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+def local_repo_path(repo):
+    code, out, _ = run(["orca", "repo", "list", "--json"], timeout=15)
+    data = json_or_none(out) or {}
+    for r in (data.get("result") or {}).get("repos", []):
+        if r.get("displayName") == repo or pathlib.Path(r.get("path", "")).name == repo:
+            return r["path"], True
+    for root in LOCAL_ROOTS:
+        cand = root / repo
+        if (cand / ".git").exists():
+            return str(cand), False
+    return None, False
+
+
+def open_in_orca(project, branch, url):
+    repo = project.split("/")[-1]
+    if not (SAFE.match(repo) and SAFE.match(branch)):
+        return {"ok": False, "error": "unsafe project/branch name"}
+    path, registered = local_repo_path(repo)
+    if not path:
+        return {"ok": False, "error": "%s is not cloned under ~/dev" % repo}
+    run(["orca", "open"], timeout=60)
+    if not registered:
+        run(["orca", "repo", "add", "--path", path, "--json"], timeout=20)
+    name = branch.replace("/", "-")
+    cmd = ["orca", "worktree", "create", "--name", name, "--repo", "path:" + path,
+           "--branch", branch, "--base-branch", "origin/" + branch, "--activate", "--json"]
+    if url:
+        cmd += ["--gitlab-mr", url]
+    run(["git", "-C", path, "fetch", "origin", branch], timeout=30)
+    code, out, err = run(cmd, timeout=90)
+    data = json_or_none(out) or {}
+    if code == 0 and data.get("ok", True):
+        return {"ok": True}
+    msg = ((data.get("error") or {}).get("message") if isinstance(data.get("error"), dict) else data.get("error")) \
+        or err.strip() or out.strip()
+    if "already" in str(msg).lower():
+        run(["orca", "open"], timeout=30)
+        return {"ok": True, "note": "worktree already existed"}
+    return {"ok": False, "error": str(msg)[:200]}
+
+
+def open_in_cornercase_remote(project, branch):
+    repo = project.split("/")[-1]
+    if not (SAFE.match(repo) and SAFE.match(branch)) or not REMOTE:
+        return {"ok": False, "error": "unsafe name or no remote configured"}
+    remote_path = None
+    for proj in (_cc.get("remote") or {}).get("paths", []):
+        if proj["name"] == repo:
+            remote_path = proj["path"]
+    if not remote_path:
+        remote_path = "%s/%s" % (REMOTE_FALLBACK_ROOT, repo)
+    q = shlex.quote
+    ssh_cmd = ("cd %s && git fetch origin %s && (git show-ref --verify --quiet refs/heads/%s || "
+               "git branch %s origin/%s)" % (remote_path.replace("~", "$HOME", 1) if remote_path.startswith("~") else q(remote_path),
+                                            q(branch), q(branch), q(branch), q(branch)))
+    code, out, err = run(["ssh", "-o", "BatchMode=yes", REMOTE, ssh_cmd], timeout=60)
+    if code != 0:
+        return {"ok": False, "error": ("repo missing on %s or fetch failed: " % REMOTE) + (err or out).strip()[:150]}
+    code, out, err = run(["cornercase", "open", remote_path, "--remote", REMOTE], timeout=30)
+    m = re.search(r"\d+", out or "")
+    if code != 0 or not m:
+        return {"ok": False, "error": (err or out).strip()[:150] or "cornercase open failed"}
+    code, out, err = run(["cornercase", "new-workspace", branch, "--worktree", "--project", m.group(0),
+                          "--remote", REMOTE], timeout=60)
+    if code != 0:
+        text = (err or out).strip()
+        if "exist" in text.lower():
+            return {"ok": True, "note": "workspace already existed"}
+        return {"ok": False, "error": text[:200]}
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------
@@ -430,6 +522,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         if path in ("/vpn/connect", "/vpn/disconnect"):
             return self._send(200, vpn_toggle(path.endswith("connect") and not path.endswith("disconnect")))
+        if path == "/mr/orca":
+            return self._send(200, open_in_orca(body.get("project", ""), body.get("branch", ""), body.get("url")))
+        if path == "/mr/cornercase":
+            return self._send(200, open_in_cornercase_remote(body.get("project", ""), body.get("branch", "")))
         if path.startswith("/clipboard/"):
             return self._send(200, clip_action(path, body))
         self._send(404, {"error": "not found"})

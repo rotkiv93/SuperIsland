@@ -10,6 +10,7 @@ stdlib-only server (127.0.0.1:7831) does the local work on their behalf:
   POST /vpn/connect              click "Connect" in the GlobalProtect menu-bar UI
   POST /vpn/disconnect           click "Disconnect"
   GET  /cornercase               {local, remote} summaries (agents, worktrees)
+  POST /cornercase/start         {side: local|remote} start a headless cornercase server
   POST /mr/orca                  {project, branch, url} -> Orca worktree linked to the MR
   POST /mr/cornercase            {project, branch} -> worktree workspace in cornercase on the VPS
   GET  /services                 [{name, up, ms}] VPS / GitLab / Ollama / Mongo reachability
@@ -174,7 +175,8 @@ def cornercase_query(remote):
     code, out, err = run(["cornercase", "status", "--json"] + (["--remote", remote] if remote else []), timeout=25)
     if code != 0:
         msg = (out or err).strip().splitlines()
-        return {"ok": False, "error": msg[0] if msg else "cornercase failed"}
+        first = msg[0] if msg else "cornercase failed"
+        return {"ok": False, "offline": "no cornercase server" in first.lower(), "error": first}
     try:
         res = summarize_status(json.loads(out))
     except ValueError:
@@ -522,6 +524,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, {"error": "bad json"})
         if path in ("/vpn/connect", "/vpn/disconnect"):
             return self._send(200, vpn_toggle(path.endswith("connect") and not path.endswith("disconnect")))
+        if path == "/cornercase/start":
+            remote = REMOTE if body.get("side") == "remote" else None
+            code, out, err = run(["cornercase", "start-server"] + (["--remote", remote] if remote else []), timeout=40)
+            return self._send(200, {"ok": code == 0, "error": None if code == 0 else (err or out).strip()[:150]})
         if path == "/mr/orca":
             return self._send(200, open_in_orca(body.get("project", ""), body.get("branch", ""), body.get("url")))
         if path == "/mr/cornercase":

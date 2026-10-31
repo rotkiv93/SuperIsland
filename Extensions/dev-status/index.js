@@ -11,6 +11,7 @@ var services = [];         // /services payload items
 var bridgeError = null;
 var busy = null;           // "connecting" | "disconnecting" | null
 var actionError = null;
+var starting = null;       // "local" | "remote" while start-server runs
 var activeTab = "vpn";     // "vpn" | "agents" | "worktrees"
 var timerID = null;
 var firstLoad = true;
@@ -176,7 +177,16 @@ function agentsPanel(limit) {
   var rows = [];
   ["local", "remote"].forEach(function (side) {
     var s = cc[side];
-    if (!s.ok) rows.push(View.text(side + ": " + s.error, { style: "caption", color: "gray", lineLimit: 1 }));
+    if (!s.ok && s.offline) {
+      rows.push(View.hstack([
+        View.icon("moon.zzz", { size: 11, color: "gray" }),
+        View.text("cornercase (" + side + ") isn't running", { style: "caption", color: "gray" }),
+        View.spacer(),
+        View.button(View.text(starting === side ? "Starting…" : "Start", { style: "caption", color: "green" }), "cc-start:" + side)
+      ], { spacing: 6, align: "center" }));
+    } else if (!s.ok) {
+      rows.push(View.text(side + ": " + s.error, { style: "caption", color: "orange", lineLimit: 2 }));
+    }
   });
   var agents = allAgents();
   if (agents.length === 0) rows.push(View.text("No agents running", { style: "caption", color: "gray" }));
@@ -273,6 +283,14 @@ SuperIsland.registerModule({
   onAction: function (id) {
     if (id === "vpn-connect") return vpnToggle(true);
     if (id === "vpn-disconnect") return vpnToggle(false);
+    if (id.indexOf("cc-start:") === 0) {
+      var side = id.slice(9);
+      starting = side;
+      call("POST", "/cornercase/start", { side: side }).then(function (r) {
+        starting = null; if (!r.ok) actionError = r.error; setTimeout(refresh, 1500);
+      }).catch(function () { starting = null; });
+      return;
+    }
     if (id === "refresh") { refresh(); return; }
     if (id.indexOf("tab-") === 0) { activeTab = id.slice(4); SuperIsland.playFeedback("selection"); }
   },

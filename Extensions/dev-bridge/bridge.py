@@ -201,6 +201,48 @@ def cornercase_loop():
 
 
 # --------------------------------------------------------------------------
+# GitLab summary for the native widget (token read on demand from the
+# SuperIsland GitLab extension settings; never stored or logged here)
+# --------------------------------------------------------------------------
+
+_gl = {"at": 0, "data": None}
+
+
+def _gl_get(base, token, path):
+    req = urllib.request.Request(base + "/api/v4" + path, headers={"PRIVATE-TOKEN": token})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        return json.loads(r.read().decode())
+
+
+def gitlab_summary():
+    if _gl["data"] is not None and time.time() - _gl["at"] < 60:
+        return _gl["data"]
+    code, tok, _ = run(["defaults", "read", "com.workview.SuperIsland",
+                        "extensions.victor.gitlab.settings.token"], timeout=5)
+    tok = tok.strip()
+    if code != 0 or not tok:
+        return {"ok": False, "error": "no GitLab token in SuperIsland settings"}
+    code, base, _ = run(["defaults", "read", "com.workview.SuperIsland",
+                         "extensions.victor.gitlab.settings.baseUrl"], timeout=5)
+    base = (base.strip() if code == 0 and base.strip() else "https://gitlab.lbd.udc.es").rstrip("/")
+    try:
+        def mrs(q):
+            return [{"id": m["id"], "title": m["title"], "url": m["web_url"],
+                     "project": m.get("references", {}).get("full", "").split("!")[0],
+                     "pipeline": (m.get("head_pipeline") or {}).get("status")}
+                    for m in _gl_get(base, tok, "/merge_requests?state=opened&scope=all&per_page=15&" + q)]
+        review = mrs("reviewer_username=" + _gl_get(base, tok, "/user")["username"])
+        mine = mrs("scope=created_by_me")
+        todos = len(_gl_get(base, tok, "/todos?state=pending&per_page=100"))
+        issues = len(_gl_get(base, tok, "/issues?state=opened&scope=assigned_to_me&per_page=100"))
+        data = {"ok": True, "review": review, "mine": mine, "todos": todos, "issues": issues}
+    except Exception as e:  # network/VPN down, bad token
+        return {"ok": False, "error": type(e).__name__}
+    _gl.update(at=time.time(), data=data)
+    return data
+
+
+# --------------------------------------------------------------------------
 # Open a GitLab MR branch in Orca (local) or cornercase (remote VPS)
 # --------------------------------------------------------------------------
 
@@ -509,6 +551,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "remoteName": REMOTE, "at": _cc["at"]})
         if path == "/services":
             return self._send(200, _services)
+        if path == "/gitlab/summary":
+            return self._send(200, gitlab_summary())
         if path == "/clipboard":
             return self._send(200, clip_view())
         self._send(404, {"error": "not found"})

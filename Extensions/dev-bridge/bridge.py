@@ -10,6 +10,8 @@ stdlib-only server (127.0.0.1:7831) does the local work on their behalf:
   POST /vpn/connect              click "Connect" in the GlobalProtect menu-bar UI
   POST /vpn/disconnect           click "Disconnect"
   GET  /cornercase               {local, remote} summaries (agents, worktrees)
+  GET  /services                 [{name, up, ms}] VPS / GitLab / Ollama / Mongo reachability
+  POST /clipboard/transform      {id, kind: json|minify|trim} -> result goes on the clipboard
   GET  /clipboard                {items: [...]}   (newest first, pinned first)
   POST /clipboard/copy           {id}   put an item back on the clipboard
   POST /clipboard/pin            {id}   toggle pin
@@ -22,6 +24,8 @@ carries an Origin header (i.e. from a web page) is rejected.
 
 import json
 import os
+import re
+import socket
 import pathlib
 import subprocess
 import sys
@@ -191,6 +195,49 @@ def cornercase_loop():
 
 
 # --------------------------------------------------------------------------
+# Services health
+# --------------------------------------------------------------------------
+
+_services = {"items": [], "at": 0}
+
+
+def tcp_probe(host, port, timeout=3):
+    t0 = time.time()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True, int((time.time() - t0) * 1000)
+    except OSError:
+        return False, None
+
+
+def ssh_target(alias):
+    host, port = alias, 22
+    code, out, _ = run(["ssh", "-G", alias], timeout=5)
+    for line in out.splitlines():
+        if line.startswith("hostname "):
+            host = line.split()[1]
+        elif line.startswith("port "):
+            port = int(line.split()[1])
+    return host, port
+
+
+def services_loop():
+    targets = [("VPS ssh", None), ("GitLab", (GITLAB_HOST, 443)),
+               ("Ollama", ("127.0.0.1", 11434)), ("MongoDB", ("127.0.0.1", 27017))]
+    if REMOTE:
+        targets[0] = ("VPS ssh", ssh_target(REMOTE))
+    else:
+        targets.pop(0)
+    while True:
+        items = []
+        for name, hp in targets:
+            up, ms = tcp_probe(*hp)
+            items.append({"name": name, "up": up, "ms": ms, "target": "%s:%s" % hp})
+        _services.update(items=items, at=time.time())
+        time.sleep(15)
+
+
+# --------------------------------------------------------------------------
 # Clipboard history
 # --------------------------------------------------------------------------
 
@@ -231,9 +278,22 @@ def save_pins():
         print("pin save failed:", e, file=sys.stderr)
 
 
+SECRET_RE = re.compile(
+    r"(glpat-|ghp_|gho_|github_pat_|sk-[A-Za-z0-9]|sk-ant-|AKIA[0-9A-Z]{12}|xox[baprs]-|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.|-----BEGIN [A-Z ]*PRIVATE KEY)")
+
+
+def looks_secret(text):
+    t = text.strip()
+    if SECRET_RE.search(t):
+        return True
+    # one long token with no spaces and mixed character classes
+    return (len(t) >= 32 and " " not in t and "\n" not in t and "/" not in t[:8]
+            and re.search(r"[A-Za-z]", t) and re.search(r"\d", t) and re.fullmatch(r"[A-Za-z0-9_\-+=.]+", t) is not None)
+
+
 def clip_add(text):
     text = text.strip("\n") if text else ""
-    if not text.strip() or len(text) > CLIP_MAX_CHARS:
+    if not text.strip() or len(text) > CLIP_MAX_CHARS or looks_secret(text):
         return
     with _clip_lock:
         existing = next((i for i in _clip["items"] if i["text"] == text), None)
@@ -290,6 +350,22 @@ def clip_action(path, body):
     if path == "/clipboard/copy":
         code, _, err = run(["pbcopy"], timeout=5, input_text=item["text"])
         return {"ok": code == 0, "error": err.strip() or None}
+    if path == "/clipboard/transform":
+        text = item["text"]
+        kind = body.get("kind")
+        try:
+            if kind == "json":
+                text = json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+            elif kind == "minify":
+                text = json.dumps(json.loads(text), separators=(",", ":"), ensure_ascii=False)
+            elif kind == "trim":
+                text = " ".join(text.split())
+            else:
+                return {"ok": False, "error": "unknown transform"}
+        except ValueError:
+            return {"ok": False, "error": "not valid JSON"}
+        code, _, err = run(["pbcopy"], timeout=5, input_text=text)
+        return {"ok": code == 0, "error": err.strip() or None}
     with _clip_lock:
         if path == "/clipboard/pin":
             item["pinned"] = not item["pinned"]
@@ -337,6 +413,8 @@ class Handler(BaseHTTPRequestHandler):
             with _cc_lock:
                 return self._send(200, {"local": _cc["local"], "remote": _cc["remote"],
                                         "remoteName": REMOTE, "at": _cc["at"]})
+        if path == "/services":
+            return self._send(200, _services)
         if path == "/clipboard":
             return self._send(200, clip_view())
         self._send(404, {"error": "not found"})
@@ -360,6 +438,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     threading.Thread(target=cornercase_loop, daemon=True).start()
     threading.Thread(target=clipboard_loop, daemon=True).start()
+    threading.Thread(target=services_loop, daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
 
 

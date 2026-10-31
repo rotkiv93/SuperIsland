@@ -35,6 +35,9 @@ function oneLine(t, n) {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
 }
 
+function isURL(t) { return /^https?:\/\/\S+$/.test(String(t).trim()); }
+function isJSON(t) { var s = String(t).trim(); return (s[0] === "{" || s[0] === "[") && s.length > 1 && /[}\]]$/.test(s); }
+
 function itemRow(it, width) {
   return View.hstack([
     View.button(View.hstack([
@@ -42,6 +45,8 @@ function itemRow(it, width) {
       View.text(oneLine(it.text, width), { style: "body", lineLimit: 1 })
     ], { spacing: 8, align: "center" }), "copy:" + it.id),
     View.spacer(),
+    isURL(it.text) ? View.button(View.icon("safari", { size: 11, color: "blue" }), "open:" + it.id) : null,
+    isJSON(it.text) ? View.button(View.icon("curlybraces", { size: 11, color: "teal" }), "json:" + it.id) : null,
     View.button(View.icon(it.pinned ? "pin.slash" : "pin", { size: 11, color: "gray" }), "pin:" + it.id),
     View.button(View.icon("xmark", { size: 10, color: "gray" }), "del:" + it.id)
   ], { spacing: 8, align: "center" });
@@ -84,8 +89,20 @@ SuperIsland.registerModule({
   onDeactivate: function () { if (timerID !== null) { clearInterval(timerID); timerID = null; } },
   onAction: function (id) {
     if (id === "clear") { call("POST", "/clipboard/clear").then(refresh); return; }
-    var m = /^(copy|pin|del):(\d+)$/.exec(id);
+    var m = /^(copy|pin|del|open|json):(\d+)$/.exec(id);
     if (!m) return;
+    if (m[1] === "open") {
+      var it = items.filter(function (i) { return i.id === Number(m[2]); })[0];
+      if (it) SuperIsland.openURL(it.text.trim());
+      return;
+    }
+    if (m[1] === "json") {
+      call("POST", "/clipboard/transform", { id: Number(m[2]), kind: "json" }).then(function (r) {
+        toast = { text: r.ok ? "Pretty JSON copied" : (r.error || "failed"), until: Date.now() + 2000 };
+        SuperIsland.playFeedback(r.ok ? "success" : "error"); refresh();
+      });
+      return;
+    }
     var path = { copy: "/clipboard/copy", pin: "/clipboard/pin", del: "/clipboard/delete" }[m[1]];
     call("POST", path, { id: Number(m[2]) }).then(function (r) {
       if (m[1] === "copy") {

@@ -3,7 +3,7 @@
 // GitLab — MRs to review, your open MRs (with head pipeline status), failed
 // pipelines. Needs the VPN when the instance is internal.
 
-var state = { review: [], mine: [], error: null, loading: false, at: 0 };
+var state = { review: [], mine: [], todos: [], issues: [], error: null, loading: false, at: 0 };
 var activeTab = "review";
 var known = null;        // { reviewIDs:{}, pipelines:{} } — baseline for notifications
 var timerID = null;
@@ -44,8 +44,18 @@ function refresh() {
   state.loading = true;
   Promise.all([
     api("/merge_requests?scope=all&state=opened&reviewer_username=" + encodeURIComponent(username) + "&per_page=30"),
-    api("/merge_requests?scope=created_by_me&state=opened&per_page=30")
+    api("/merge_requests?scope=created_by_me&state=opened&per_page=30"),
+    api("/todos?state=pending&per_page=30").catch(function () { return []; }),
+    api("/issues?scope=assigned_to_me&state=opened&per_page=30").catch(function () { return []; })
   ]).then(function (r) {
+    state.todos = (r[2] || []).map(function (t) {
+      return { id: t.id, action: String(t.action_name || "").replace(/_/g, " "), title: t.target && t.target.title || t.body,
+               project: t.project && t.project.path_with_namespace, url: t.target_url, who: t.author && t.author.name };
+    });
+    state.issues = (r[3] || []).map(function (i) {
+      return { id: i.id, title: i.title, project: i.references && i.references.full ? i.references.full.replace(/#\d+$/, "") : "", url: i.web_url,
+               labels: (i.labels || []).slice(0, 2).join(", ") };
+    });
     state.review = (r[0] || []).map(normalize);
     state.mine = (r[1] || []).map(normalize);
     state.error = null; state.at = Date.now();
@@ -101,17 +111,41 @@ function mrRow(m) {
   ], { spacing: 8, align: "center" });
 }
 
+function simpleRow(prefix, id, title, sub, extra) {
+  return View.hstack([
+    View.button(View.vstack([
+      View.text(title, { style: "body", lineLimit: 1 }),
+      View.text(sub, { style: "caption", color: "gray", lineLimit: 1 })
+    ], { spacing: 1, align: "leading" }), "open" + prefix + ":" + id),
+    View.spacer(),
+    extra || null
+  ], { spacing: 8, align: "center" });
+}
+
 function list() { return activeTab === "review" ? state.review : state.mine; }
 
 function tabs() {
   function t(id, label, n) {
     return View.button(View.text(label + " " + n, { style: "caption", color: activeTab === id ? "white" : "gray" }), "tab:" + id);
   }
-  return View.hstack([t("review", "Review", state.review.length), t("mine", "Mine", state.mine.length)], { spacing: 12 });
+  return View.hstack([t("review", "Review", state.review.length), t("mine", "Mine", state.mine.length), t("todos", "Todos", state.todos.length), t("issues", "Issues", state.issues.length)], { spacing: 10 });
 }
 
 function bodyRows(limit) {
   if (state.error) return [View.text(state.error, { style: "caption", color: "orange", lineLimit: 3 })];
+  if (activeTab === "todos") {
+    if (state.todos.length === 0) return [View.text("Inbox zero 🎉", { style: "caption", color: "gray" })];
+    return state.todos.slice(0, limit).map(function (t) {
+      return simpleRow("t", t.id, t.title, t.action + " · " + (t.project || "") + (t.who ? " · " + t.who : ""),
+        View.button(View.icon("checkmark.circle", { size: 12, color: "green" }), "done:" + t.id));
+    });
+  }
+  if (activeTab === "issues") {
+    if (state.issues.length === 0) return [View.text("No assigned issues", { style: "caption", color: "gray" })];
+    return state.issues.slice(0, limit).map(function (i) {
+      return simpleRow("i", i.id, i.title, i.project + (i.labels ? " · " + i.labels : ""));
+    });
+  }
   var l = list();
   if (l.length === 0) return [View.text(state.at ? "Nothing here 🎉" : "Loading…", { style: "caption", color: "gray" })];
   return l.slice(0, limit).map(mrRow);
@@ -122,7 +156,7 @@ function compactView() {
   return View.hstack([
     View.icon("arrow.triangle.merge", { size: 12, color: failed ? "red" : "orange" }),
     View.spacer(),
-    View.text(state.error ? "!" : state.review.length + " to review" + (failed ? " · " + failed + " ✗" : ""), { style: "caption", lineLimit: 1 })
+    View.text(state.error ? "!" : state.review.length + " to review" + (state.todos.length ? " · " + state.todos.length + " todo" : "") + (failed ? " · " + failed + " ✗" : ""), { style: "caption", lineLimit: 1 })
   ], { spacing: 6, align: "center" });
 }
 
@@ -153,6 +187,20 @@ SuperIsland.registerModule({
   onAction: function (id) {
     if (id === "refresh") { state.loading = false; username ? refresh() : init(); return; }
     if (id.indexOf("tab:") === 0) { activeTab = id.slice(4); SuperIsland.playFeedback("selection"); return; }
+    var tm = /^(opent|openi|done):(\d+)$/.exec(id);
+    if (tm) {
+      var n = Number(tm[2]);
+      if (tm[1] === "opent" || tm[1] === "openi") {
+        var o = (tm[1] === "opent" ? state.todos : state.issues).filter(function (x) { return x.id === n; })[0];
+        if (o && o.url) SuperIsland.openURL(o.url);
+      } else {
+        api("/todos/" + n + "/mark_as_done", "POST").then(function () {
+          state.todos = state.todos.filter(function (x) { return x.id !== n; });
+          SuperIsland.playFeedback("success");
+        }).catch(function (e) { state.error = "Could not mark done: " + e.message; });
+      }
+      return;
+    }
     var m = /^(open|retry):(\d+)$/.exec(id);
     if (!m) return;
     var mr = state.review.concat(state.mine).filter(function (x) { return x.id === Number(m[2]); })[0];

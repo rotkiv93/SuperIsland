@@ -7,6 +7,7 @@ var BRIDGE = "http://127.0.0.1:7831";
 
 var vpn = null;            // /vpn payload
 var cc = null;             // /cornercase payload
+var services = [];         // /services payload items
 var bridgeError = null;
 var busy = null;           // "connecting" | "disconnecting" | null
 var actionError = null;
@@ -47,6 +48,14 @@ function refresh() {
   }).catch(function (e) {
     bridgeError = "Dev bridge not running (" + e.message + "). Run Extensions/dev-bridge/install.sh";
   });
+  call("GET", "/services").then(function (r) {
+    var before = services;
+    services = r.items || [];
+    before.forEach(function (b) {
+      var now = services.filter(function (x) { return x.name === b.name; })[0];
+      if (now && b.up && !now.up && setting("notifyVpn", true)) { notify(b.name + " is down", now.target); SuperIsland.playFeedback("warning"); }
+    });
+  }).catch(function () {});
   call("GET", "/cornercase").then(function (c) {
     cc = c; trackAgents(c);
   }).catch(function () {});
@@ -96,6 +105,8 @@ function allWorktrees() {
 }
 function removableWorktrees() { return allWorktrees().filter(function (x) { return x.w.merged || x.w.prunable; }); }
 
+function servicesDown() { return services.filter(function (x) { return !x.up; }); }
+
 function vpnColor() {
   if (busy) return "yellow";
   if (!vpn) return "gray";
@@ -114,11 +125,12 @@ function vpnLabel() {
 function compactView() {
   var working = countStatus("working");
   var done = removableWorktrees().length;
+  var down = servicesDown().length;
   return View.hstack([
     View.icon(vpn && vpn.connected ? "lock.shield.fill" : "lock.open", { color: vpnColor(), size: 13 }),
     View.spacer(),
-    View.text(working > 0 ? working + " working" : (done > 0 ? done + " to clean" : vpnLabel()),
-              { style: "caption", color: working > 0 ? "yellow" : "white", lineLimit: 1 })
+    View.text(working > 0 ? working + " working" : (down > 0 ? down + " svc down" : (done > 0 ? done + " to clean" : vpnLabel())),
+              { style: "caption", color: working > 0 || down > 0 ? "yellow" : "white", lineLimit: 1 })
   ], { spacing: 6, align: "center" });
 }
 
@@ -126,7 +138,7 @@ function tabBar() {
   function tab(id, label) {
     return View.button(View.text(label, { style: "caption", color: activeTab === id ? "white" : "gray" }), "tab-" + id);
   }
-  return View.hstack([tab("vpn", "VPN"), tab("agents", "Agents"), tab("worktrees", "Worktrees")], { spacing: 14 });
+  return View.hstack([tab("vpn", "VPN"), tab("agents", "Agents"), tab("worktrees", "Worktrees"), tab("services", "Services")], { spacing: 14 });
 }
 
 function vpnPanel() {
@@ -192,16 +204,30 @@ function worktreesPanel(limit) {
   return rows;
 }
 
+function servicesPanel() {
+  if (services.length === 0) return [View.text("Checking services…", { style: "caption", color: "gray" })];
+  return services.map(function (x) {
+    return View.hstack([
+      View.icon("circle.fill", { size: 8, color: x.up ? "green" : "red" }),
+      View.text(x.name, { style: "body" }),
+      View.spacer(),
+      View.text(x.up ? x.ms + " ms" : "down", { style: "caption", color: x.up ? "gray" : "red" }),
+      View.text(x.target, { style: "monospacedSmall", color: "gray" })
+    ], { spacing: 8, align: "center" });
+  });
+}
+
 function body(limit) {
   if (bridgeError) return [View.text(bridgeError, { style: "caption", color: "orange", lineLimit: 3 })];
   if (activeTab === "vpn") return vpnPanel();
   if (activeTab === "agents") return agentsPanel(limit);
+  if (activeTab === "services") return servicesPanel();
   return worktreesPanel(limit);
 }
 
 function expandedView() {
   var header = View.hstack([
-    View.text(activeTab === "vpn" ? "VPN" : activeTab === "agents" ? "Agents" : "Worktrees", { style: "title" }),
+    View.text({ vpn: "VPN", agents: "Agents", worktrees: "Worktrees", services: "Services" }[activeTab], { style: "title" }),
     View.spacer(), tabBar(),
     View.button(View.icon("arrow.clockwise", { size: 12, color: "gray" }), "refresh")
   ], { spacing: 10, align: "center" });

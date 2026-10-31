@@ -1,0 +1,19 @@
+{
+  "id": "victor.dev-status",
+  "name": "Dev Status",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "main": "index.js",
+  "author": { "name": "Victor" },
+  "description": "GlobalProtect VPN status with connect/disconnect, plus Cornercase agents and worktrees (local and remote VPS).",
+  "icon": "icon.svg",
+  "license": "MIT",
+  "categories": ["developer"],
+  "permissions": ["network", "notifications", "storage"],
+  "capabilities": {
+    "compact": true, "expanded": true, "fullExpanded": true,
+    "minimalCompact": false, "backgroundRefresh": true, "settings": true
+  },
+  "refreshInterval": 1.0,
+  "activationTriggers": ["manual"]
+}

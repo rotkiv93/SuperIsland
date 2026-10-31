@@ -1,0 +1,7 @@
+{
+  "sections": [
+    { "title": "Behavior", "fields": [
+      { "type": "toggle", "key": "autoReveal", "label": "Reveal the island briefly when something is copied", "default": false }
+    ] }
+  ]
+}

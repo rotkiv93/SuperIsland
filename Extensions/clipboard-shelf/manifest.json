@@ -1,0 +1,16 @@
+{
+  "id": "victor.clipboard-shelf",
+  "name": "Clipboard Shelf",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "main": "index.js",
+  "author": { "name": "Victor" },
+  "description": "Clipboard history in the island: click to copy back, pin favourites, delete or clear.",
+  "icon": "icon.svg",
+  "license": "MIT",
+  "categories": ["productivity"],
+  "permissions": ["network", "storage"],
+  "capabilities": { "compact": true, "expanded": true, "fullExpanded": true, "backgroundRefresh": true, "settings": true },
+  "refreshInterval": 1.0,
+  "activationTriggers": ["manual"]
+}

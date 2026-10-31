@@ -1,0 +1,16 @@
+{
+  "id": "victor.gitlab",
+  "name": "GitLab",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "main": "index.js",
+  "author": { "name": "Victor" },
+  "description": "Merge requests to review, your open MRs and pipeline status on a (self-hosted) GitLab.",
+  "icon": "icon.svg",
+  "license": "MIT",
+  "categories": ["developer"],
+  "permissions": ["network", "notifications", "storage"],
+  "capabilities": { "compact": true, "expanded": true, "fullExpanded": true, "backgroundRefresh": true, "settings": true },
+  "refreshInterval": 1.0,
+  "activationTriggers": ["manual"]
+}
